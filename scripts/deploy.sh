@@ -7,7 +7,8 @@ REMOTE="devops"                      # псевдоним из ~/.ssh/config (П
 REMOTE_DIR="/var/www/devops-site"
 SITE_URL="https://devops.local"
 CA_CERT="${HOME}/devops.crt"
-LOCAL_DIR="$(git rev-parse --show-toplevel)/site/"
+ROOT="$(git rev-parse --show-toplevel)"
+LOCAL_DIR="${ROOT}/site/"
 
 err() { echo "ОШИБКА: $*" >&2; exit 1; }
 
@@ -26,11 +27,16 @@ RSYNC_VERSION="$(rsync --version 2>&1 || true)"
 # 2. Проверки по требованиям 4 и 5
 [[ -f "${LOCAL_DIR}index.html" ]] || err "файл site/index.html не найден, доставка отменена"
 
-if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
-    err "в репозитории есть незафиксированные изменения, выполните commit"
+# изменения в отслеживаемых файлах (включая индекс) и новые файлы в site/, ещё не добавленные в git
+CHANGES="$(git -C "$ROOT" status --porcelain --untracked-files=no)"
+UNTRACKED="$(git -C "$ROOT" ls-files --others --exclude-standard -- site ':!:**/.DS_Store')"
+if [[ -n "$CHANGES" || -n "$UNTRACKED" ]]; then
+    err "в репозитории есть незафиксированные изменения, выполните commit:
+${CHANGES}${UNTRACKED:+
+${UNTRACKED}}"
 fi
 
-COMMIT="$(git rev-parse --short HEAD)"
+COMMIT="$(git -C "$ROOT" rev-parse --short HEAD)"
 
 # 3. Синхронизация каталога (одно SSH-соединение, без запроса пароля)
 RSYNC_OPTS=(-avz --delete --chmod=D755,F644 --exclude='.DS_Store'
