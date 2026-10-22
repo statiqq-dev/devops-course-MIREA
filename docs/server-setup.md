@@ -216,3 +216,68 @@ scp scripts/audit.sh devops:~/audit.sh
 ssh -t devops '~/audit.sh; echo "Код возврата: $?"'    # ожидается 0
 ssh devops.local -p 2222 -i ~/.ssh/devops_vm -l devops 'hostname -f'
 ```
+
+
+## 9. Контейнеризация
+
+| Параметр | Значение |
+|---|---|
+| Docker Engine | из официального репозитория `download.docker.com` (пакет `docker.io` не используется), версия 29.9.2 (`docker version --format '{{.Server.Version}}'`) |
+| Docker Compose | плагин `docker-compose-plugin`, v5.6.1 (`docker compose version`) |
+| Группа docker | `devops` (имеет sudo; учётные записи без sudo в группу не включаются) |
+| Проект на сервере | `/home/devops/app` (доставляется из `app/` репозитория через rsync) |
+| Файл `.env` | `/home/devops/app/.env`, владелец `devops`, права `600`, только на сервере, в репозиторий не добавляется |
+| Сервисы | `app` (образ `devops-app:1.0`, пользователь `app`), `db` (`postgres:16-alpine`) |
+| Публикуемые порты | `127.0.0.1:5000 → app:5000`; порт СУБД 5432 не публикуется |
+| Сеть | `app_backend` (bridge), СУБД доступна приложению по имени `db` |
+| Именованный том | `app_db_data` → `/var/lib/postgresql/data` |
+| Обратный прокси | `location /app/` в HTTPS-блоке `/etc/nginx/sites-available/devops-site`, `proxy_pass http://127.0.0.1:5000/` |
+
+**Восстановление:**
+
+```bash
+# [VM] установка Docker Engine из официального репозитория
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker devops
+exit                                   # перезайти, чтобы группа применилась
+```
+
+```bash
+# [Mac] доставка проекта
+rsync -avz --delete --exclude=.env app/ devops:app/
+```
+
+```bash
+# [VM] секреты и запуск
+cd ~/app
+cp .env.example .env
+chmod 600 .env
+sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 16)/" .env
+docker compose up -d --build
+docker compose ps                      # db: (healthy)
+```
+
+В HTTPS-блок `/etc/nginx/sites-available/devops-site` (после `location /`) добавить:
+
+```nginx
+location /app/ {
+    proxy_pass http://127.0.0.1:5000/;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+```bash
+# [VM]
+sudo nginx -t && sudo systemctl reload nginx
+```

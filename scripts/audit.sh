@@ -39,5 +39,23 @@ check "Входящий трафик по умолчанию запрещён" "
 echo "[3] Учётные записи"
 awk -F: '$3>=1000 && $3<65534 {printf "    %s (uid=%s)\n",$1,$3}' /etc/passwd
 
+echo "[4] Веб-сервер"
+CERT_MIN_DAYS="${CERT_MIN_DAYS:-30}"   # порог срока сертификата, для проверки: CERT_MIN_DAYS=400
+check "Служба nginx активна" "active" "$(systemctl is-active nginx)"
+check "Конфигурация nginx корректна" "0" "$(sudo nginx -t >/dev/null 2>&1; echo $?)"
+check "Сертификат действителен ещё ${CERT_MIN_DAYS} дней" "0" \
+      "$(openssl x509 -checkend $((CERT_MIN_DAYS * 86400)) -noout -in /etc/ssl/certs/devops.crt >/dev/null 2>&1; echo $?)"
+check "Нет файлов с правом записи для всех" "" "$(find /var/www/devops-site -perm -o+w 2>/dev/null)"
+check "Права закрытого ключа равны 600" "600" "$(sudo stat -c '%a' /etc/ssl/private/devops.key)"
+
+echo "[5] Контейнеризация"
+check "Служба docker активна" "active" "$(systemctl is-active docker)"
+check "Контейнер СУБД в состоянии healthy" "healthy" \
+      "$(docker inspect -f '{{.State.Health.Status}}' app-db-1 2>/dev/null)"
+# адреса, на которых слушаются 5000/5432, кроме 127.0.0.1 (пустая строка — норма)
+exposed_ports="$(ss -tln | awk '$4 ~ /:(5000|5432)$/ && $4 !~ /^127\.0\.0\.1:/ {print $4}' | xargs)"
+check "Порты 5000 и 5432 только на 127.0.0.1" "" "$exposed_ports"
+check "Права файла ~/app/.env равны 600" "600" "$(stat -c '%a' /home/devops/app/.env 2>/dev/null)"
+
 echo "Пройдено: $PASS, не пройдено: $FAIL"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
